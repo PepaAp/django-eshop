@@ -118,6 +118,10 @@ class Order(models.Model):
 	date = models.DateTimeField(blank=True, null=True)
 	total_price = models.DecimalField(max_digits=10, decimal_places=2, blank=True, null=True)
 	address = models.CharField(max_length=100, blank=True, null=True)
+	shipping_address = models.CharField(max_length=100, blank=True, null=True)
+	full_name = models.CharField(max_length=60, blank=True, null=True)
+	email = models.EmailField(max_length=30, blank=True, null=True)
+	phone = models.CharField(max_length=15, blank=True, null=True)
 	payment_method = models.CharField(
 		max_length=10,
 		choices=PaymentMethod.choices,
@@ -135,8 +139,20 @@ class Order(models.Model):
 		db_table = "shop_order"
 
 	def save(self, *args, **kwargs):
-		if self._state.adding and not self.address and self.user_id:
-			self.address = self.user.address
+		if self._state.adding and self.user_id:
+			if not self.address:
+				self.address = self.user.address
+			if not self.shipping_address:
+				self.shipping_address = self.user.address
+			if not self.phone:
+				self.phone = self.user.phone
+			if not self.email:
+				self.email = self.user.email
+			if not self.full_name:
+				full_name = " ".join(
+					part for part in [self.user.surname, self.user.lastname] if part
+				)
+				self.full_name = full_name
 		super().save(*args, **kwargs)
 
 	def recalculate_total(self) -> None:
