@@ -1,3 +1,8 @@
+from decimal import Decimal
+
+from django.core.exceptions import ValidationError
+from django.core.validators import MinValueValidator
+from django.db import transaction
 from django.db import models
 
 
@@ -17,8 +22,18 @@ class Category(models.Model):
 		db_table = "category"
 		verbose_name_plural = "Categories"
 
+	def full_path(self) -> str:
+		parts = []
+		current = self
+		seen = set()
+		while current and current.pk and current.pk not in seen:
+			seen.add(current.pk)
+			parts.append(current.name or "(unnamed category)")
+			current = current.parent
+		return " / ".join(reversed(parts))
+
 	def __str__(self) -> str:
-		return self.name or "(unnamed category)"
+		return self.full_path()
 
 
 class Product(models.Model):
@@ -48,7 +63,7 @@ class Inventory(models.Model):
 		related_name="inventory_items",
 		db_column="product_id",
 	)
-	quantity = models.IntegerField(blank=True, null=True)
+	quantity = models.IntegerField(blank=True, null=True, validators=[MinValueValidator(0)])
 
 	class Meta:
 		db_table = "inventory"
@@ -119,6 +134,20 @@ class Order(models.Model):
 	class Meta:
 		db_table = "shop_order"
 
+	def save(self, *args, **kwargs):
+		if self._state.adding and not self.address and self.user_id:
+			self.address = self.user.address
+		super().save(*args, **kwargs)
+
+	def recalculate_total(self) -> None:
+		total = Decimal("0.00")
+		for item in self.items.all():
+			if item.price is None or item.quantity is None:
+				continue
+			total += item.price * item.quantity
+		self.total_price = total
+		self.save(update_fields=["total_price"])
+
 	def __str__(self) -> str:
 		return f"Order #{self.id_order}"
 
@@ -137,11 +166,64 @@ class OrderItem(models.Model):
 		related_name="order_items",
 		db_column="product_id",
 	)
-	quantity = models.IntegerField(blank=True, null=True)
+	quantity = models.IntegerField(blank=True, null=True, validators=[MinValueValidator(0)])
 	price = models.DecimalField(max_digits=10, decimal_places=2, blank=True, null=True)
 
 	class Meta:
 		db_table = "order_item"
+
+	@staticmethod
+	def _apply_inventory_delta(product_id: int, delta: int) -> None:
+		if not product_id or delta == 0:
+			return
+		inventory, _ = Inventory.objects.select_for_update().get_or_create(
+			product_id=product_id,
+			defaults={"quantity": 0},
+		)
+		current = inventory.quantity or 0
+		new_value = current - delta
+		if new_value < 0:
+			raise ValidationError("Not enough inventory for this product.")
+		inventory.quantity = new_value
+		inventory.save(update_fields=["quantity"])
+
+	def save(self, *args, **kwargs):
+		if self.price is None and self.product_id:
+			self.price = self.product.price
+
+		with transaction.atomic():
+			prev_quantity = 0
+			prev_product_id = None
+			if self.pk:
+				previous = OrderItem.objects.select_for_update().get(pk=self.pk)
+				prev_quantity = previous.quantity or 0
+				prev_product_id = previous.product_id
+
+			new_quantity = self.quantity or 0
+			new_product_id = self.product_id
+
+			if prev_product_id and prev_product_id != new_product_id:
+				self._apply_inventory_delta(prev_product_id, -prev_quantity)
+				prev_quantity = 0
+
+			delta = new_quantity - prev_quantity
+			self._apply_inventory_delta(new_product_id, delta)
+			super().save(*args, **kwargs)
+
+		if self.order_id:
+			self.order.recalculate_total()
+
+	def delete(self, *args, **kwargs):
+		product_id = self.product_id
+		quantity = self.quantity or 0
+		order = self.order if self.order_id else None
+
+		with transaction.atomic():
+			self._apply_inventory_delta(product_id, -quantity)
+			super().delete(*args, **kwargs)
+
+		if order:
+			order.recalculate_total()
 
 	def __str__(self) -> str:
 		return f"{self.product} x {self.quantity}"
