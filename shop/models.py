@@ -6,7 +6,15 @@ from django.db import transaction
 from django.db import models
 
 
-class Category(models.Model):
+class TimeStampedModel(models.Model):
+	created_at = models.DateTimeField(auto_now_add=True)
+	updated_at = models.DateTimeField(auto_now=True)
+
+	class Meta:
+		abstract = True
+
+
+class Category(TimeStampedModel):
 	id_category = models.AutoField(primary_key=True, db_column="id_category")
 	parent = models.ForeignKey(
 		"self",
@@ -36,7 +44,7 @@ class Category(models.Model):
 		return self.full_path()
 
 
-class Product(models.Model):
+class Product(TimeStampedModel):
 	id_product = models.AutoField(primary_key=True, db_column="id_product")
 	category = models.ForeignKey(
 		Category,
@@ -45,17 +53,25 @@ class Product(models.Model):
 		db_column="category_id",
 	)
 	name = models.CharField(max_length=50, blank=True, null=True)
-	price = models.DecimalField(max_digits=10, decimal_places=2, blank=True, null=True)
+	price = models.DecimalField(
+		max_digits=10,
+		decimal_places=2,
+		default=Decimal("0.00"),
+		null=False,
+		blank=False,
+	)
 	image = models.ImageField(upload_to="products/", blank=True, null=True)
 
 	class Meta:
 		db_table = "product"
+		# DB check constraints are applied via migrations for compatibility with the
+		# project's Django version.
 
 	def __str__(self) -> str:
 		return self.name or "(unnamed product)"
 
 
-class Inventory(models.Model):
+class Inventory(TimeStampedModel):
 	id_inventory = models.AutoField(primary_key=True, db_column="id_inventory")
 	product = models.ForeignKey(
 		Product,
@@ -63,17 +79,19 @@ class Inventory(models.Model):
 		related_name="inventory_items",
 		db_column="product_id",
 	)
-	quantity = models.IntegerField(blank=True, null=True, validators=[MinValueValidator(0)])
+	quantity = models.IntegerField(default=0, validators=[MinValueValidator(0)])
 
 	class Meta:
 		db_table = "inventory"
 		verbose_name_plural = "Inventory"
+		# DB check constraints are applied via migrations for compatibility with the
+		# project's Django version.
 
 	def __str__(self) -> str:
 		return f"{self.product} ({self.quantity})"
 
 
-class ShopUser(models.Model):
+class ShopUser(TimeStampedModel):
 	id_user = models.AutoField(primary_key=True, db_column="id_user")
 	surname = models.CharField(max_length=25, blank=True, null=True)
 	lastname = models.CharField(max_length=25, blank=True, null=True)
@@ -92,7 +110,7 @@ class ShopUser(models.Model):
 		return full_name or self.email
 
 
-class Order(models.Model):
+class Order(TimeStampedModel):
 	class PaymentMethod(models.TextChoices):
 		CARD = "card", "card"
 		CASH = "cash", "cash"
@@ -115,8 +133,8 @@ class Order(models.Model):
 		related_name="orders",
 		db_column="user_id",
 	)
-	date = models.DateTimeField(blank=True, null=True)
-	total_price = models.DecimalField(max_digits=10, decimal_places=2, blank=True, null=True)
+	date = models.DateTimeField(blank=True, null=True, db_index=True)
+	total_price = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.00"), null=False)
 	address = models.CharField(max_length=100, blank=True, null=True)
 	shipping_address = models.CharField(max_length=100, blank=True, null=True)
 	full_name = models.CharField(max_length=60, blank=True, null=True)
@@ -127,16 +145,26 @@ class Order(models.Model):
 		choices=PaymentMethod.choices,
 		blank=True,
 		null=True,
+		db_index=True,
 	)
 	status = models.CharField(
 		max_length=20,
 		choices=Status.choices,
-		blank=True,
-		null=True,
+		blank=False,
+		null=False,
+		default=Status.CREATED,
+		db_index=True,
 	)
 
 	class Meta:
 		db_table = "shop_order"
+		indexes = [
+			models.Index(fields=["date"]),
+			models.Index(fields=["status"]),
+			models.Index(fields=["payment_method"]),
+		]
+		# DB check constraints are applied via migrations for compatibility with the
+		# project's Django version.
 
 	def save(self, *args, **kwargs):
 		if self._state.adding and self.user_id:
@@ -168,7 +196,7 @@ class Order(models.Model):
 		return f"Order #{self.id_order}"
 
 
-class OrderItem(models.Model):
+class OrderItem(TimeStampedModel):
 	id_order_item = models.AutoField(primary_key=True, db_column="id_order_item")
 	order = models.ForeignKey(
 		Order,
@@ -182,11 +210,13 @@ class OrderItem(models.Model):
 		related_name="order_items",
 		db_column="product_id",
 	)
-	quantity = models.IntegerField(blank=True, null=True, validators=[MinValueValidator(0)])
-	price = models.DecimalField(max_digits=10, decimal_places=2, blank=True, null=True)
+	quantity = models.IntegerField(default=0, validators=[MinValueValidator(0)])
+	price = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.00"))
 
 	class Meta:
 		db_table = "order_item"
+		# DB check constraints are applied via migrations for compatibility with the
+		# project's Django version.
 
 	@staticmethod
 	def _apply_inventory_delta(product_id: int, delta: int) -> None:
